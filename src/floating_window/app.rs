@@ -7,7 +7,7 @@ use rust_i18n::t;
 use std::time::{Duration, Instant};
 use winit::platform::macos::EventLoopBuilderExtMacOS;
 
-const WINDOW_SIZE: egui::Vec2 = egui::Vec2::new(140.0, 110.0);
+const WINDOW_SIZE: egui::Vec2 = egui::Vec2::new(196.0, 146.0);
 const CLOSE_BUTTON_SIZE: f32 = 12.0;
 const CLOSE_BUTTON_OFFSET: egui::Vec2 = egui::Vec2::new(-4.0, -4.0);
 const CONTENT_OFFSET: egui::Vec2 = egui::Vec2::new(2.0, 2.0);
@@ -147,19 +147,9 @@ impl VerificationCodeApp {
                 .layout(egui::Layout::top_down(egui::Align::Center)),
         );
 
-        content_ui.add_space(5.0);
-        content_ui.add(egui::Label::new(t!("floating_window.click_input_box")).selectable(false));
-        content_ui
-            .add(egui::Label::new(t!("floating_window.click_button_below")).selectable(false));
+        content_ui.add_space(10.0);
 
-        let btn_response = self.custom_button(
-            &mut content_ui,
-            &format!(
-                "{}\n{}",
-                t!("floating_window.code", code = self.code),
-                t!("floating_window.from", source = self.source)
-            ),
-        );
+        let btn_response = self.custom_button(&mut content_ui);
 
         if btn_response.clicked() {
             let _ = auto_paste(true, &self.code);
@@ -181,11 +171,29 @@ impl VerificationCodeApp {
         }
     }
 
-    fn custom_button(&self, ui: &mut egui::Ui, text: &str) -> egui::Response {
-        let available_size = ui.available_size();
-        let button_size = vec2(available_size.x - 5.0, available_size.y - 2.0);
+    fn formatted_code(&self) -> String {
+        let chars: Vec<char> = self.code.chars().collect();
+        if chars.len() >= 4 && chars.len() <= 8 && chars.iter().all(|c| c.is_ascii_digit()) {
+            chars
+                .into_iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        } else {
+            self.code.clone()
+        }
+    }
 
-        let (rect, response) = ui.allocate_exact_size(button_size, egui::Sense::click());
+    fn custom_button(&self, ui: &mut egui::Ui) -> egui::Response {
+        let available_size = ui.available_size();
+        let group_size = vec2(available_size.x - 10.0, available_size.y - 6.0);
+
+        let (rect, _) = ui.allocate_exact_size(group_size, egui::Sense::hover());
+        let card_rect = egui::Rect::from_min_max(
+            egui::pos2(rect.min.x + 2.0, rect.min.y + 18.0),
+            egui::pos2(rect.max.x - 2.0, rect.max.y - 18.0),
+        );
+        let response = ui.interact(card_rect, ui.id().with("otp_card"), egui::Sense::click());
 
         let bg_color = if response.is_pointer_button_down_on() {
             if ui.visuals().dark_mode {
@@ -209,32 +217,59 @@ impl VerificationCodeApp {
             }
         };
 
-        ui.painter().rect_filled(rect, 6.0, bg_color);
+        ui.painter().rect_filled(
+            card_rect.translate(vec2(0.0, 3.0)),
+            6.0,
+            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 18),
+        );
+        ui.painter().rect_filled(card_rect, 6.0, bg_color);
+        ui.painter().rect_stroke(
+            card_rect,
+            6.0,
+            egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 45)),
+            egui::StrokeKind::Inside,
+        );
 
-        let text_color = if ui.visuals().dark_mode {
+        let primary_text_color = if ui.visuals().dark_mode {
             egui::Color32::WHITE
         } else {
             egui::Color32::BLACK
         };
+        let source_text_color = if ui.visuals().dark_mode {
+            egui::Color32::from_rgba_unmultiplied(210, 210, 210, 135)
+        } else {
+            egui::Color32::from_rgba_unmultiplied(78, 78, 78, 150)
+        };
+        let hint_text_color = if ui.visuals().dark_mode {
+            egui::Color32::from_rgba_unmultiplied(220, 220, 220, 160)
+        } else {
+            egui::Color32::from_rgba_unmultiplied(90, 90, 90, 180)
+        };
 
-        let lines: Vec<&str> = text.split('\n').collect();
-        let font_id = egui::FontId::proportional(12.0);
+        let source_text = t!("floating_window.from_source", source = self.source.clone());
+        ui.painter().text(
+            egui::pos2(card_rect.max.x - 2.0, card_rect.min.y - 9.0),
+            egui::Align2::RIGHT_CENTER,
+            source_text,
+            egui::FontId::proportional(9.0),
+            source_text_color,
+        );
 
-        let line_height = 18.0;
-        let total_height = line_height * lines.len() as f32;
+        ui.painter().text(
+            egui::pos2(card_rect.center().x, card_rect.center().y - 1.0),
+            egui::Align2::CENTER_CENTER,
+            self.formatted_code(),
+            egui::FontId::monospace(22.0),
+            primary_text_color,
+        );
 
-        let first_line_y = rect.center().y - (total_height / 2.0) + (line_height / 2.0);
-
-        for (i, line) in lines.iter().enumerate() {
-            let y_pos = first_line_y + i as f32 * line_height;
-            ui.painter().text(
-                egui::pos2(rect.center().x, y_pos),
-                egui::Align2::CENTER_CENTER,
-                line,
-                font_id.clone(),
-                text_color,
-            );
-        }
+        ui.painter().text(
+            egui::pos2(card_rect.center().x, card_rect.max.y + 10.0),
+            egui::Align2::CENTER_CENTER,
+            t!("floating_window.click_to_fill"),
+            egui::FontId::proportional(10.0),
+            hint_text_color,
+        );
 
         response
     }
