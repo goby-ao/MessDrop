@@ -17,7 +17,7 @@ use crate::permissions;
 
 static LAST_PROCESSED_ROWID: Mutex<i64> = Mutex::new(0);
 const CATCH_UP_POLL_INTERVAL: Duration = Duration::from_secs(2);
-const CATCH_UP_POLL_WINDOW: Duration = Duration::from_secs(30);
+const CATCH_UP_POLL_WINDOW: Duration = Duration::from_secs(60);
 const FILE_EVENT_SCAN_DEBOUNCE: Duration = Duration::from_millis(350);
 
 struct MessageProcessorState {
@@ -318,10 +318,12 @@ impl MessageProcessor {
                 );
                 self.schedule_catch_up_polling();
             } else if !is_catch_up_polling && !messages.is_empty() {
-                debug!(
-                    "No OTP found in {} new Messages row(s); catch-up polling not started",
-                    messages.len()
+                info!(
+                    "No OTP found in {} new Messages row(s); starting catch-up polling for {} seconds",
+                    messages.len(),
+                    CATCH_UP_POLL_WINDOW.as_secs()
                 );
+                self.schedule_catch_up_polling();
             }
 
             if !messages.is_empty() {
