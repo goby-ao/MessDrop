@@ -51,6 +51,8 @@ pub struct Config {
     pub listen_email: bool,
     pub listen_message: bool,
     pub floating_window: bool,
+    #[serde(default = "default_enabled")]
+    pub double_click_fill: bool,
     pub verification_keywords: Vec<String>,
     pub verification_regex: String,
 
@@ -68,6 +70,7 @@ impl Default for Config {
             listen_email: true,
             listen_message: true,
             floating_window: true,
+            double_click_fill: true,
             verification_keywords: vec![
                 "验证码".to_string(),
                 "动态密码".to_string(),
@@ -153,6 +156,7 @@ impl Config {
             listen_email: Option<bool>,
             listen_message: Option<bool>,
             floating_window: Option<bool>,
+            double_click_fill: Option<bool>,
             verification_keywords: Option<Vec<String>>,
             verification_regex: Option<String>,
         }
@@ -166,6 +170,7 @@ impl Config {
             listen_email: legacy.listen_email.unwrap_or(true),
             listen_message: legacy.listen_message.unwrap_or(true),
             floating_window: legacy.floating_window.unwrap_or(true),
+            double_click_fill: legacy.double_click_fill.unwrap_or(true),
             verification_keywords: legacy.verification_keywords.unwrap_or_else(|| {
                 vec![
                     "验证码".to_string(),
@@ -219,4 +224,8 @@ impl Config {
         log::info!("{}", t!("logging.initialized"));
         Ok(())
     }
+}
+
+fn default_enabled() -> bool {
+    true
 }

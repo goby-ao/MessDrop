@@ -104,6 +104,12 @@ config:
   direct_input_disabled:
     en: Direct input disabled
     zh-CN: 直接输入已禁用
+  double_click_fill_enabled:
+    en: Double-click input fill enabled
+    zh-CN: 双击输入框填充已启用
+  double_click_fill_disabled:
+    en: Double-click input fill disabled
+    zh-CN: 双击输入框填充已禁用
   failed_to_save_config:
     en: Failed to save config:%{error}
     zh-CN: 保存配置失败:%{error}
@@ -268,6 +274,9 @@ menu:
   floating_window:
     en: Floating Window
     zh-CN: 悬浮窗
+  double_click_fill:
+    en: Double-click Input to Fill
+    zh-CN: 双击输入框填充
   config:
     en: Config
     zh-CN: 配置

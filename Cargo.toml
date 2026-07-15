@@ -28,6 +28,10 @@ sys-locale = "0.3.2"
 sysproxy = "0.3.0"
 fancy-regex = "0.16.1"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10.0"
+core-graphics = "0.25.0"
+
 [package.metadata.packager]
 product-name = "MessAuto"
 identifier = "com.leeese.messauto"

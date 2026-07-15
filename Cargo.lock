@@ -2909,6 +2909,8 @@ dependencies = [
  "auto-launch",
  "cargo-packager-updater",
  "chrono",
+ "core-foundation 0.10.0",
+ "core-graphics 0.25.0",
  "ctrlc",
  "dirs 5.0.1",
  "eframe",

@@ -14,6 +14,7 @@ use crate::config::Config;
 use crate::ipc;
 use crate::parser;
 use crate::permissions;
+use crate::quick_fill;
 
 static LAST_PROCESSED_ROWID: Mutex<i64> = Mutex::new(0);
 const CATCH_UP_POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -258,6 +259,9 @@ impl MessageProcessor {
                     );
 
                     let config = Config::load().unwrap_or_default();
+                    if config.double_click_fill {
+                        quick_fill::cache_code(&code);
+                    }
 
                     if config.floating_window {
                         match ipc::spawn_floating_window(&code, "iMessage") {

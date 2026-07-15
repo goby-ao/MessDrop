@@ -8,6 +8,7 @@ mod monitor;
 mod notification;
 mod parser;
 mod permissions;
+mod quick_fill;
 mod tray;
 mod updater;
 
@@ -106,6 +107,7 @@ fn main() {
         info!("{}", t!("tray.about_to_run_tray_application"));
 
         let _guard = rt.enter();
+        quick_fill::start_listener();
         let monitor_sender = monitor::start_monitoring_actor();
 
         tray::run_tray_application(

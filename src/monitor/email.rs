@@ -13,6 +13,7 @@ use crate::clipboard;
 use crate::config::Config;
 use crate::ipc;
 use crate::parser;
+use crate::quick_fill;
 
 rust_i18n::i18n!("../locales");
 
@@ -193,6 +194,9 @@ impl FileProcessor for EmailProcessor {
             info!("{}", t!("monitor.mail_content", content = &content));
 
             let config = Config::load().unwrap_or_default();
+            if config.double_click_fill {
+                quick_fill::cache_code(&code);
+            }
 
             if config.floating_window {
                 match ipc::spawn_floating_window(&code, "Mail") {

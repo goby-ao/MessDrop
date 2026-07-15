@@ -40,6 +40,7 @@ struct MenuItems {
     listen_email: CheckMenuItem,
     listen_message: CheckMenuItem,
     floating_window: CheckMenuItem,
+    double_click_fill: CheckMenuItem,
     config: MenuItem,
     log: MenuItem,
     check_update: MenuItem,
@@ -218,6 +219,12 @@ impl TrayApplication {
                 config_guard.floating_window,
                 None,
             ),
+            double_click_fill: CheckMenuItem::new(
+                &t!("menu.double_click_fill"),
+                true,
+                config_guard.double_click_fill,
+                None,
+            ),
             config: MenuItem::new(&t!("menu.config"), true, None),
             log: MenuItem::new(&t!("menu.log"), true, None),
             check_update: MenuItem::new(&t!("menu.check_update"), true, None),
@@ -240,6 +247,7 @@ impl TrayApplication {
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&items_ref.launch_at_login)?;
         menu.append(&items_ref.floating_window)?;
+        menu.append(&items_ref.double_click_fill)?;
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&items_ref.config)?;
         menu.append(&items_ref.log)?;
@@ -461,6 +469,22 @@ impl ApplicationHandler<UserEvent> for TrayApplication {
                         );
 
                         self.apply_menu_logic(menu_items, &config);
+                    } else if event.id == menu_items.double_click_fill.id() {
+                        config.double_click_fill = !config.double_click_fill;
+                        menu_items
+                            .double_click_fill
+                            .set_checked(config.double_click_fill);
+                        if let Err(e) = config.save() {
+                            log::error!("{}", t!("config.failed_to_save_config", error = e));
+                        }
+                        info!(
+                            "{}",
+                            if config.double_click_fill {
+                                t!("config.double_click_fill_enabled")
+                            } else {
+                                t!("config.double_click_fill_disabled")
+                            }
+                        );
                     } else if event.id == menu_items.config.id() {
                         let config_path = Config::get_config_path();
                         #[cfg(target_os = "macos")]
