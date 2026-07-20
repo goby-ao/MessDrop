@@ -184,7 +184,7 @@ pub fn start_listener() {}
 mod macos {
     use super::{DoubleClickDetector, active_code, consume_confirmed_code, dismiss_popup};
     use crate::{clipboard, config::Config};
-    use core_foundation::base::{Boolean, CFType, CFTypeID, CFTypeRef, TCFType};
+    use core_foundation::base::{CFType, CFTypeID, CFTypeRef, TCFType};
     use core_foundation::runloop::CFRunLoop;
     use core_foundation::string::{CFString, CFStringRef};
     use core_graphics::event::{
@@ -202,9 +202,16 @@ mod macos {
     const FOCUS_SETTLE_DELAY: Duration = Duration::from_millis(80);
     const FILL_VERIFICATION_DELAY: Duration = Duration::from_millis(200);
     const LISTENER_RETRY_DELAY: Duration = Duration::from_secs(10);
+    const MAX_INPUT_ANCESTOR_DEPTH: usize = 6;
     const AX_ERROR_SUCCESS: i32 = 0;
 
     type AXUIElementRef = *const c_void;
+
+    #[derive(Clone, Copy)]
+    struct ClickLocation {
+        x: f64,
+        y: f64,
+    }
 
     #[link(name = "ApplicationServices", kind = "framework")]
     unsafe extern "C" {
@@ -214,10 +221,11 @@ mod macos {
             attribute: CFStringRef,
             value: *mut CFTypeRef,
         ) -> i32;
-        fn AXUIElementIsAttributeSettable(
+        fn AXUIElementCopyElementAtPosition(
             element: AXUIElementRef,
-            attribute: CFStringRef,
-            settable: *mut Boolean,
+            x: f32,
+            y: f32,
+            value: *mut AXUIElementRef,
         ) -> i32;
         fn AXUIElementGetTypeID() -> CFTypeID;
     }
@@ -245,7 +253,7 @@ mod macos {
         }
     }
 
-    fn run_event_listener(trigger_sender: SyncSender<()>) {
+    fn run_event_listener(trigger_sender: SyncSender<ClickLocation>) {
         loop {
             let sender = trigger_sender.clone();
             let double_click_detector = Mutex::new(DoubleClickDetector::default());
@@ -273,7 +281,10 @@ mod macos {
                         && is_double_click
                         && active_code().is_some()
                     {
-                        let _ = sender.try_send(());
+                        let _ = sender.try_send(ClickLocation {
+                            x: location.x,
+                            y: location.y,
+                        });
                     }
                     CallbackResult::Keep
                 },
@@ -294,8 +305,8 @@ mod macos {
         }
     }
 
-    fn run_fill_worker(trigger_receiver: Receiver<()>) {
-        while trigger_receiver.recv().is_ok() {
+    fn run_fill_worker(trigger_receiver: Receiver<ClickLocation>) {
+        while let Ok(click_location) = trigger_receiver.recv() {
             thread::sleep(FOCUS_SETTLE_DELAY);
 
             let config = Config::load().unwrap_or_default();
@@ -303,7 +314,9 @@ mod macos {
                 continue;
             }
 
-            let Some(input) = focused_empty_input() else {
+            let Some(input) =
+                focused_empty_input().or_else(|| empty_input_at_position(click_location))
+            else {
                 continue;
             };
             let Some(code) = active_code() else {
@@ -348,48 +361,63 @@ mod macos {
 
     fn focused_empty_input() -> Option<FocusedInput> {
         unsafe {
-            let system_wide = AXUIElementCreateSystemWide();
-            if system_wide.is_null() {
-                return None;
-            }
-            let system_wide = CFType::wrap_under_create_rule(system_wide as CFTypeRef);
+            let system_wide = create_system_wide_element()?;
 
-            let Some(focused) = copy_attribute(
+            let focused = copy_attribute(
                 system_wide.as_CFTypeRef() as AXUIElementRef,
                 "AXFocusedUIElement",
-            ) else {
-                return None;
-            };
-            if focused.type_of() != AXUIElementGetTypeID() {
-                return None;
-            }
+            )?;
+            empty_input_or_ancestor(focused)
+        }
+    }
 
-            let element = focused.as_CFTypeRef() as AXUIElementRef;
-            let Some(role) = copy_string_attribute(element, "AXRole") else {
-                return None;
-            };
-            if !matches!(role.as_str(), "AXTextField" | "AXTextArea" | "AXComboBox") {
-                return None;
-            }
-
-            let value_attribute = CFString::new("AXValue");
-            let mut settable: Boolean = 0;
-            if AXUIElementIsAttributeSettable(
-                element,
-                value_attribute.as_concrete_TypeRef(),
-                &mut settable,
+    fn empty_input_at_position(location: ClickLocation) -> Option<FocusedInput> {
+        unsafe {
+            let system_wide = create_system_wide_element()?;
+            let mut element: AXUIElementRef = ptr::null();
+            if AXUIElementCopyElementAtPosition(
+                system_wide.as_CFTypeRef() as AXUIElementRef,
+                location.x as f32,
+                location.y as f32,
+                &mut element,
             ) != AX_ERROR_SUCCESS
-                || settable == 0
+                || element.is_null()
             {
                 return None;
             }
 
-            if !copy_string_attribute(element, "AXValue").is_some_and(|value| value.is_empty()) {
+            let element = CFType::wrap_under_create_rule(element as CFTypeRef);
+            empty_input_or_ancestor(element)
+        }
+    }
+
+    unsafe fn create_system_wide_element() -> Option<CFType> {
+        let system_wide = unsafe { AXUIElementCreateSystemWide() };
+        if system_wide.is_null() {
+            return None;
+        }
+        Some(unsafe { CFType::wrap_under_create_rule(system_wide as CFTypeRef) })
+    }
+
+    unsafe fn empty_input_or_ancestor(mut candidate: CFType) -> Option<FocusedInput> {
+        for _ in 0..=MAX_INPUT_ANCESTOR_DEPTH {
+            if candidate.type_of() != unsafe { AXUIElementGetTypeID() } {
                 return None;
             }
 
-            Some(FocusedInput { element: focused })
+            let element = candidate.as_CFTypeRef() as AXUIElementRef;
+            let is_empty_input =
+                unsafe { copy_string_attribute(element, "AXRole") }.is_some_and(|role| {
+                    matches!(role.as_str(), "AXTextField" | "AXTextArea" | "AXComboBox")
+                }) && unsafe { copy_string_attribute(element, "AXValue") }
+                    .is_some_and(|value| value.is_empty());
+            if is_empty_input {
+                return Some(FocusedInput { element: candidate });
+            }
+
+            candidate = unsafe { copy_attribute(element, "AXParent") }?;
         }
+        None
     }
 
     unsafe fn copy_attribute(element: AXUIElementRef, name: &str) -> Option<CFType> {

@@ -36,7 +36,6 @@ fn main() {
             .init();
     }
 
-    #[cfg(debug_assertions)]
     if env::args().any(|arg| arg == "--quick-fill-test") {
         quick_fill::start_listener();
         quick_fill::cache_code("654321");
