@@ -193,14 +193,15 @@ mod macos {
     };
     use std::ffi::c_void;
     use std::ptr;
-    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+    use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::{Duration, Instant};
 
     const FOCUS_SETTLE_DELAY: Duration = Duration::from_millis(80);
     const FILL_VERIFICATION_DELAY: Duration = Duration::from_millis(200);
+    const LISTENER_RECOVERY_DELAY: Duration = Duration::from_secs(1);
     const LISTENER_RETRY_DELAY: Duration = Duration::from_secs(10);
     const MAX_INPUT_ANCESTOR_DEPTH: usize = 6;
     const AX_ERROR_SUCCESS: i32 = 0;
@@ -257,12 +258,23 @@ mod macos {
         loop {
             let sender = trigger_sender.clone();
             let double_click_detector = Mutex::new(DoubleClickDetector::default());
+            let tap_was_disabled = Arc::new(AtomicBool::new(false));
+            let callback_tap_was_disabled = Arc::clone(&tap_was_disabled);
             let result = CGEventTap::with_enabled(
                 CGEventTapLocation::Session,
                 CGEventTapPlacement::TailAppendEventTap,
                 CGEventTapOptions::ListenOnly,
                 vec![CGEventType::LeftMouseDown],
                 move |_proxy, event_type, event| {
+                    if matches!(
+                        event_type,
+                        CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput
+                    ) {
+                        callback_tap_was_disabled.store(true, Ordering::Release);
+                        CFRunLoop::get_current().stop();
+                        return CallbackResult::Keep;
+                    }
+
                     let click_state =
                         event.get_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE);
                     let location = event.location();
@@ -277,10 +289,7 @@ mod macos {
                             )
                         })
                         .unwrap_or(false);
-                    if matches!(event_type, CGEventType::LeftMouseDown)
-                        && is_double_click
-                        && active_code().is_some()
-                    {
+                    if matches!(event_type, CGEventType::LeftMouseDown) && is_double_click {
                         let _ = sender.try_send(ClickLocation {
                             x: location.x,
                             y: location.y,
@@ -294,7 +303,11 @@ mod macos {
                 },
             );
 
-            if result.is_err() {
+            if tap_was_disabled.load(Ordering::Acquire) {
+                log::warn!("Double-click listener was disabled by macOS; restarting");
+                thread::sleep(LISTENER_RECOVERY_DELAY);
+                continue;
+            } else if result.is_err() {
                 log::warn!(
                     "Unable to start double-click listener; retrying after Accessibility permission is available"
                 );
@@ -309,17 +322,23 @@ mod macos {
         while let Ok(click_location) = trigger_receiver.recv() {
             thread::sleep(FOCUS_SETTLE_DELAY);
 
+            let Some(code) = active_code() else {
+                continue;
+            };
+
             let config = Config::load().unwrap_or_default();
             if !config.double_click_fill {
+                log::info!("Ignored double-click because input fill is disabled");
                 continue;
             }
 
+            log::info!("Detected double-click with an active verification code");
             let Some(input) =
                 focused_empty_input().or_else(|| empty_input_at_position(click_location))
             else {
-                continue;
-            };
-            let Some(code) = active_code() else {
+                log::warn!(
+                    "Double-click target is not a recognizable empty input; keeping popup visible"
+                );
                 continue;
             };
 
