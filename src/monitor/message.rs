@@ -265,7 +265,12 @@ impl MessageProcessor {
 
                     if config.floating_window {
                         match ipc::spawn_floating_window(&code, "iMessage") {
-                            Ok(_) => debug!("Floating window spawned successfully"),
+                            Ok(child) => {
+                                if config.double_click_fill {
+                                    quick_fill::register_popup(&code, child);
+                                }
+                                debug!("Floating window spawned successfully");
+                            }
                             Err(e) => error!("Failed to spawn floating window: {}", e),
                         }
                     } else if config.direct_input {

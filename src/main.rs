@@ -36,6 +36,15 @@ fn main() {
             .init();
     }
 
+    #[cfg(debug_assertions)]
+    if env::args().any(|arg| arg == "--quick-fill-test") {
+        quick_fill::start_listener();
+        quick_fill::cache_code("654321");
+        info!("Quick-fill test mode ready with code 654321");
+        sleep(Duration::from_secs(600));
+        return;
+    }
+
     let app_config = match config::Config::load() {
         Ok(config) => Arc::new(Mutex::new(config)),
         Err(e) => {

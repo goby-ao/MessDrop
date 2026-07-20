@@ -49,7 +49,7 @@ Keeping these apps running in the background shortens the time it takes to sync 
 - Config: Quickly opens the TOML configuration file where you can customize regex patterns and keywords.
 - Log: Quickly opens the log file.
 - Floating Window: Automatically shows a popup near the cursor when a verification code is detected. This forces the "Don't Occupy Clipboard" mode.
-- Double-click Input to Fill: Within five minutes of receiving a verification code, double-click an empty input field to fill it. The code is kept only in memory and consumed after filling.
+- Double-click Input to Fill: Within five minutes of receiving a verification code, double-click an empty input field to fill it. The popup closes only after the input value is confirmed, and the code is then consumed from memory.
 
 > Keywords: Also called trigger words. The program will only perform subsequent operations when a message contains keywords such as "verification code". Otherwise, the message will be ignored.
 
