@@ -42,6 +42,15 @@ impl DoubleClickDetector {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
+fn input_is_fillable(role: Option<&str>, value: Option<&str>) -> bool {
+    if !matches!(role, Some("AXTextField" | "AXTextArea" | "AXComboBox")) {
+        return false;
+    }
+
+    value.is_none_or(str::is_empty)
+}
+
 struct CachedOtp<P> {
     code: String,
     received_at: Instant,
@@ -182,27 +191,26 @@ pub fn start_listener() {}
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use super::{DoubleClickDetector, active_code, consume_confirmed_code, dismiss_popup};
+    use super::{
+        DoubleClickDetector, active_code, consume_confirmed_code, dismiss_popup, input_is_fillable,
+    };
     use crate::{clipboard, config::Config};
     use core_foundation::base::{CFType, CFTypeID, CFTypeRef, TCFType};
-    use core_foundation::runloop::CFRunLoop;
     use core_foundation::string::{CFString, CFStringRef};
-    use core_graphics::event::{
-        CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType,
-        CallbackResult, EventField,
-    };
+    use core_graphics::event::{CGEvent, CGMouseButton};
+    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
     use std::ffi::c_void;
     use std::ptr;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
-    use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::{Duration, Instant};
 
     const FOCUS_SETTLE_DELAY: Duration = Duration::from_millis(80);
     const FILL_VERIFICATION_DELAY: Duration = Duration::from_millis(200);
-    const LISTENER_RECOVERY_DELAY: Duration = Duration::from_secs(1);
-    const LISTENER_RETRY_DELAY: Duration = Duration::from_secs(10);
+    const ACTIVE_CODE_CHECK_INTERVAL: Duration = Duration::from_millis(50);
+    const ACTIVE_MOUSE_POLL_INTERVAL: Duration = Duration::from_millis(2);
+    const IDLE_MOUSE_POLL_INTERVAL: Duration = Duration::from_millis(50);
     const MAX_INPUT_ANCESTOR_DEPTH: usize = 6;
     const AX_ERROR_SUCCESS: i32 = 0;
 
@@ -229,6 +237,7 @@ mod macos {
             value: *mut AXUIElementRef,
         ) -> i32;
         fn AXUIElementGetTypeID() -> CFTypeID;
+        fn CGEventSourceButtonState(state_id: CGEventSourceStateID, button: CGMouseButton) -> bool;
     }
 
     pub fn start_listener() {
@@ -255,66 +264,43 @@ mod macos {
     }
 
     fn run_event_listener(trigger_sender: SyncSender<ClickLocation>) {
+        let mut double_click_detector = DoubleClickDetector::default();
+        let mut cached_code: Option<String> = None;
+        let mut last_code_check = Instant::now()
+            .checked_sub(ACTIVE_CODE_CHECK_INTERVAL)
+            .unwrap_or_else(Instant::now);
+        let mut was_left_button_down = left_button_is_down();
+
+        log::info!("Double-click input listener started");
+
         loop {
-            let sender = trigger_sender.clone();
-            let double_click_detector = Mutex::new(DoubleClickDetector::default());
-            let tap_was_disabled = Arc::new(AtomicBool::new(false));
-            let callback_tap_was_disabled = Arc::clone(&tap_was_disabled);
-            let result = CGEventTap::with_enabled(
-                CGEventTapLocation::Session,
-                CGEventTapPlacement::TailAppendEventTap,
-                CGEventTapOptions::ListenOnly,
-                vec![CGEventType::LeftMouseDown],
-                move |_proxy, event_type, event| {
-                    if matches!(
-                        event_type,
-                        CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput
-                    ) {
-                        callback_tap_was_disabled.store(true, Ordering::Release);
-                        CFRunLoop::get_current().stop();
-                        return CallbackResult::Keep;
-                    }
-
-                    let click_state =
-                        event.get_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE);
-                    let location = event.location();
-                    let is_double_click = double_click_detector
-                        .lock()
-                        .map(|mut detector| {
-                            detector.register_click(
-                                click_state,
-                                location.x,
-                                location.y,
-                                Instant::now(),
-                            )
-                        })
-                        .unwrap_or(false);
-                    if matches!(event_type, CGEventType::LeftMouseDown) && is_double_click {
-                        let _ = sender.try_send(ClickLocation {
-                            x: location.x,
-                            y: location.y,
-                        });
-                    }
-                    CallbackResult::Keep
-                },
-                || {
-                    log::info!("Double-click input listener started");
-                    CFRunLoop::run_current();
-                },
-            );
-
-            if tap_was_disabled.load(Ordering::Acquire) {
-                log::warn!("Double-click listener was disabled by macOS; restarting");
-                thread::sleep(LISTENER_RECOVERY_DELAY);
-                continue;
-            } else if result.is_err() {
-                log::warn!(
-                    "Unable to start double-click listener; retrying after Accessibility permission is available"
-                );
-            } else {
-                log::warn!("Double-click listener stopped unexpectedly; restarting");
+            let now = Instant::now();
+            if now.saturating_duration_since(last_code_check) >= ACTIVE_CODE_CHECK_INTERVAL {
+                let active_code = active_code();
+                if active_code != cached_code {
+                    cached_code = active_code;
+                    double_click_detector = DoubleClickDetector::default();
+                    was_left_button_down = left_button_is_down();
+                }
+                last_code_check = now;
             }
-            thread::sleep(LISTENER_RETRY_DELAY);
+
+            if cached_code.is_none() {
+                thread::sleep(IDLE_MOUSE_POLL_INTERVAL);
+                continue;
+            }
+
+            let is_left_button_down = left_button_is_down();
+            if is_left_button_down
+                && !was_left_button_down
+                && let Some(location) = current_mouse_location()
+                && double_click_detector.register_click(1, location.x, location.y, Instant::now())
+            {
+                log::info!("Detected double-click with an active verification code");
+                let _ = trigger_sender.try_send(location);
+            }
+            was_left_button_down = is_left_button_down;
+            thread::sleep(ACTIVE_MOUSE_POLL_INTERVAL);
         }
     }
 
@@ -332,7 +318,6 @@ mod macos {
                 continue;
             }
 
-            log::info!("Detected double-click with an active verification code");
             let Some(input) =
                 focused_empty_input().or_else(|| empty_input_at_position(click_location))
             else {
@@ -364,6 +349,25 @@ mod macos {
                 ),
             }
         }
+    }
+
+    fn left_button_is_down() -> bool {
+        unsafe {
+            CGEventSourceButtonState(
+                CGEventSourceStateID::CombinedSessionState,
+                CGMouseButton::Left,
+            )
+        }
+    }
+
+    fn current_mouse_location() -> Option<ClickLocation> {
+        let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState).ok()?;
+        let event = CGEvent::new(source).ok()?;
+        let location = event.location();
+        Some(ClickLocation {
+            x: location.x,
+            y: location.y,
+        })
     }
 
     struct FocusedInput {
@@ -425,13 +429,26 @@ mod macos {
             }
 
             let element = candidate.as_CFTypeRef() as AXUIElementRef;
-            let is_empty_input =
-                unsafe { copy_string_attribute(element, "AXRole") }.is_some_and(|role| {
-                    matches!(role.as_str(), "AXTextField" | "AXTextArea" | "AXComboBox")
-                }) && unsafe { copy_string_attribute(element, "AXValue") }
-                    .is_some_and(|value| value.is_empty());
-            if is_empty_input {
+            let role = unsafe { copy_string_attribute(element, "AXRole") };
+            let subrole = unsafe { copy_string_attribute(element, "AXSubrole") };
+            let value = unsafe { copy_string_attribute(element, "AXValue") };
+            if input_is_fillable(role.as_deref(), value.as_deref()) {
                 return Some(FocusedInput { element: candidate });
+            }
+            if matches!(
+                role.as_deref(),
+                Some("AXTextField" | "AXTextArea" | "AXComboBox")
+            ) {
+                log::warn!(
+                    "Rejected input candidate: role={}, subrole={}, value_state={}",
+                    role.as_deref().unwrap_or("unknown"),
+                    subrole.as_deref().unwrap_or("none"),
+                    if value.is_some() {
+                        "non-empty"
+                    } else {
+                        "unavailable"
+                    }
+                );
             }
 
             candidate = unsafe { copy_attribute(element, "AXParent") }?;
@@ -462,7 +479,7 @@ mod macos {
 
 #[cfg(test)]
 mod tests {
-    use super::{DoubleClickDetector, OTP_TTL, OtpCache, value_confirms_fill};
+    use super::{DoubleClickDetector, OTP_TTL, OtpCache, input_is_fillable, value_confirms_fill};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -559,5 +576,24 @@ mod tests {
         let mut detector = DoubleClickDetector::default();
 
         assert!(detector.register_click(2, 100.0, 100.0, Instant::now()));
+    }
+
+    #[test]
+    fn accepts_an_empty_text_input() {
+        assert!(input_is_fillable(Some("AXTextField"), Some("")));
+    }
+
+    #[test]
+    fn accepts_a_secure_input_when_macos_hides_its_value() {
+        assert!(input_is_fillable(Some("AXTextField"), None));
+    }
+
+    #[test]
+    fn rejects_non_empty_or_non_input_elements() {
+        assert!(!input_is_fillable(
+            Some("AXTextField"),
+            Some("already filled")
+        ));
+        assert!(!input_is_fillable(Some("AXButton"), Some("")));
     }
 }
