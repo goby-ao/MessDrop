@@ -121,8 +121,9 @@ impl<P> OtpCache<P> {
         &mut self,
         code: &str,
         observed_value: Option<&str>,
+        is_secure: bool,
     ) -> Option<ConsumedOtp<P>> {
-        if !value_confirms_fill(observed_value, code) {
+        if !value_confirms_fill(observed_value, code, is_secure) {
             return None;
         }
         self.consume_if_matches(code)
@@ -155,11 +156,15 @@ fn active_code() -> Option<String> {
     cache().lock().ok()?.active_code(Instant::now())
 }
 
-fn consume_confirmed_code(code: &str, observed_value: Option<&str>) -> Option<ConsumedOtp<Child>> {
+fn consume_confirmed_code(
+    code: &str,
+    observed_value: Option<&str>,
+    is_secure: bool,
+) -> Option<ConsumedOtp<Child>> {
     cache()
         .lock()
         .ok()?
-        .consume_if_confirmed(code, observed_value)
+        .consume_if_confirmed(code, observed_value, is_secure)
 }
 
 fn dismiss_popup(mut popup: Child) {
@@ -177,8 +182,15 @@ fn dismiss_popup(mut popup: Child) {
     }
 }
 
-fn value_confirms_fill(value: Option<&str>, code: &str) -> bool {
-    value.is_some_and(|value| value == code)
+fn value_confirms_fill(value: Option<&str>, code: &str, is_secure: bool) -> bool {
+    value.is_some_and(|value| {
+        value == code
+            || (is_secure
+                && value.chars().count() == code.chars().count()
+                && value
+                    .chars()
+                    .all(|character| matches!(character, '•' | '●' | '*')))
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -331,8 +343,19 @@ mod macos {
                 Ok(()) => {
                     thread::sleep(FILL_VERIFICATION_DELAY);
                     let observed_value = input.value();
-                    if let Some(consumed) = consume_confirmed_code(&code, observed_value.as_deref())
+                    if let Some(consumed) =
+                        consume_confirmed_code(&code, observed_value.as_deref(), input.is_secure)
                     {
+                        if config.auto_enter {
+                            if let Err(error) = clipboard::press_enter() {
+                                log::error!(
+                                    "Failed to press Enter after double-click fill: {}",
+                                    error
+                                );
+                            } else {
+                                log::info!("Auto-pressed Enter after double-click fill");
+                            }
+                        }
                         if let Some(popup) = consumed.popup {
                             dismiss_popup(popup);
                         }
@@ -372,6 +395,7 @@ mod macos {
 
     struct FocusedInput {
         element: CFType,
+        is_secure: bool,
     }
 
     impl FocusedInput {
@@ -433,7 +457,10 @@ mod macos {
             let subrole = unsafe { copy_string_attribute(element, "AXSubrole") };
             let value = unsafe { copy_string_attribute(element, "AXValue") };
             if input_is_fillable(role.as_deref(), value.as_deref()) {
-                return Some(FocusedInput { element: candidate });
+                return Some(FocusedInput {
+                    element: candidate,
+                    is_secure: subrole.as_deref() == Some("AXSecureTextField"),
+                });
             }
             if matches!(
                 role.as_deref(),
@@ -528,12 +555,20 @@ mod tests {
 
     #[test]
     fn confirms_only_an_exact_observed_fill() {
-        assert!(value_confirms_fill(Some("123456"), "123456"));
-        assert!(!value_confirms_fill(None, "123456"));
-        assert!(!value_confirms_fill(Some(""), "123456"));
-        assert!(!value_confirms_fill(Some("123"), "123456"));
-        assert!(!value_confirms_fill(Some("••••••"), "123456"));
-        assert!(!value_confirms_fill(Some("654321"), "123456"));
+        assert!(value_confirms_fill(Some("123456"), "123456", false));
+        assert!(!value_confirms_fill(None, "123456", false));
+        assert!(!value_confirms_fill(Some(""), "123456", false));
+        assert!(!value_confirms_fill(Some("123"), "123456", false));
+        assert!(!value_confirms_fill(Some("••••••"), "123456", false));
+        assert!(!value_confirms_fill(Some("654321"), "123456", false));
+    }
+
+    #[test]
+    fn confirms_same_length_mask_for_a_secure_input() {
+        assert!(value_confirms_fill(Some("••••••"), "123456", true));
+        assert!(value_confirms_fill(Some("******"), "123456", true));
+        assert!(!value_confirms_fill(Some("•••••"), "123456", true));
+        assert!(!value_confirms_fill(Some("654321"), "123456", true));
     }
 
     #[test]
@@ -543,11 +578,15 @@ mod tests {
         cache.store("123456", now);
         assert!(cache.attach_popup("123456", 42, now).is_ok());
 
-        assert!(cache.consume_if_confirmed("123456", Some("123")).is_none());
+        assert!(
+            cache
+                .consume_if_confirmed("123456", Some("123"), false)
+                .is_none()
+        );
         assert_eq!(cache.active_code(now), Some("123456".to_string()));
 
         let consumed = cache
-            .consume_if_confirmed("123456", Some("123456"))
+            .consume_if_confirmed("123456", Some("123456"), false)
             .unwrap();
         assert_eq!(consumed.popup, Some(42));
     }
